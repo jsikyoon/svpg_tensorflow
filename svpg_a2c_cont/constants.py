@@ -8,7 +8,7 @@ LOG_FILE = 'tmp/a3c_log/cur'
 INITIAL_ALPHA_LOW = 1e-5   # log_uniform low limit for learning rate
 INITIAL_ALPHA_HIGH = 1e-5   # log_uniform high limit for learning rate
 
-PARALLEL_SIZE = 1 # parallel thread size
+N_PARTICLES = 2 # the number of particles
 ENV_NAME = 'Reacher-v1'
 ACTION_SIZE = 2 # action size
 STATE_SIZE = 11 # state size

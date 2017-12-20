@@ -8,8 +8,10 @@ import math
 # (Policy network and Value network)
 class GameACNetwork(object):
   def __init__(self,
-          action_size):
+          action_size,
+          postfix):
     self._action_size = action_size
+    self._postfix = postfix
 
   def prepare_loss(self, entropy_beta):
     # taken action (input for policy)
@@ -36,6 +38,9 @@ class GameACNetwork(object):
     # value loss (output)
     # (Learning rate for Critic is half of Actor's, so multiply by 0.5)
     value_loss = 0.5*tf.nn.l2_loss(self.r - self.v)
+
+    self.policy_loss = policy_loss;
+    self.value_loss = value_loss;
 
     # gradienet of policy and value are summed up
     self.total_loss = policy_loss + value_loss
@@ -92,11 +97,11 @@ class GameACNetwork(object):
 
 # Actor-Critic FF Network
 class GameACFFNetwork(GameACNetwork):
-  def __init__(self,action_size):
+  def __init__(self,action_size,postfix):
 
-    GameACNetwork.__init__(self, action_size)
+    GameACNetwork.__init__(self, action_size,postfix)
 
-    scope_name = "net_"
+    scope_name = "net_"+postfix
     with tf.variable_scope(scope_name) as scope:
       """
       self.W_conv1, self.b_conv1 = self._conv_variable([8, 8, 4, 16])  # stride=4
@@ -166,9 +171,9 @@ class GameACFFNetwork(GameACNetwork):
 
 # Actor-Critic LSTM Network
 class GameACLSTMNetwork(GameACNetwork):
-  def __init__(self,action_size):
+  def __init__(self,action_size,postfix):
 
-    GameACNetwork.__init__(self, action_size)
+    GameACNetwork.__init__(self, action_size,postfix)
 
     # state (input)
     self.s = tf.placeholder("float", [None, STATE_SIZE, 4])
@@ -179,7 +184,7 @@ class GameACLSTMNetwork(GameACNetwork):
     self.pinitial_lstm_state0 = tf.placeholder(tf.float32, [1, 200])
     self.pinitial_lstm_state1 = tf.placeholder(tf.float32, [1, 200])
     self.pinitial_lstm_state = tf.contrib.rnn.LSTMStateTuple(self.pinitial_lstm_state0,self.pinitial_lstm_state1)
-    scope_name = "net_policy"
+    scope_name = "net_policy_"+postfix
     with tf.variable_scope(scope_name) as scope:
       ### policy weights
       self.pW_fc1, self.pb_fc1 = self._fc_variable([STATE_SIZE*4, 200])
@@ -219,7 +224,7 @@ class GameACLSTMNetwork(GameACNetwork):
     self.vinitial_lstm_state1 = tf.placeholder(tf.float32, [1, 200])
     self.vinitial_lstm_state = tf.contrib.rnn.LSTMStateTuple(self.vinitial_lstm_state0,self.vinitial_lstm_state1)
     
-    scope_name = "net_value"
+    scope_name = "net_value_"+postfix
     with tf.variable_scope(scope_name) as scope:
       ### value weights
       self.vW_fc1, self.vb_fc1 = self._fc_variable([STATE_SIZE*4, 200])
