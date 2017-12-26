@@ -96,8 +96,6 @@ class PolicyEstimator():
 
             # Loss and train op
             self.loss = -self.normal_dist.log_prob(self.action) * self.target
-            # Add cross entropy cost to encourage exploration
-            self.loss -= 1e-1 * self.normal_dist.entropy()
             self.optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
             self.grads_and_vars = self.optimizer.compute_gradients(self.loss)
             self.grads=[];
@@ -158,9 +156,9 @@ class ValueEstimator():
         _, loss = sess.run([self.train_op, self.loss], feed_dict)
         return loss
 
-def actor_critic(env, estimator_policy, estimator_value, svpg, num_episodes, discount_factor=1.0):
+def REINFORCE(env, estimator_policy, estimator_value, svpg, num_episodes, discount_factor=1.0):
     """
-    Actor Critic Algorithm. Optimizes the policy 
+    REINFORCE Algorithm. Optimizes the policy 
     function approximator using policy gradient.
     
     Args:
@@ -213,22 +211,7 @@ def actor_critic(env, estimator_policy, estimator_value, svpg, num_episodes, dis
               stats["episode_rewards"][i][i_episode] += reward[i]
               stats["episode_lengths"][i][i_episode] = t
             
-              # Calculate TD Target
-              value_next = estimator_value[i].predict(next_state[i])
-              td_target = reward[i] + discount_factor * value_next
-              td_error = td_target - estimator_value[i].predict(state[i])
-            
-              # Update the value estimator
-              estimator_value[i].update(state[i], td_target)
-            
-              # Update the policy estimator
-              # using the td error as our advantage estimate
-              # estimator_policy[i].update(state[i], td_error, action[i])
-              feed_dict.update({estimator_policy[i].state:featurize_state(state[i])});
-              feed_dict.update({estimator_policy[i].target:td_error});
-              feed_dict.update({estimator_policy[i].action:action[i]});
               state[i] = next_state[i]
-            svpg.run(feed_dict);
 
             # checking one of them is done
             Done=False;
@@ -241,6 +224,25 @@ def actor_critic(env, estimator_policy, estimator_value, svpg, num_episodes, dis
             
         # Print out which step we're on, useful for debugging.
         print("Episode {}/{} ({})".format(i_episode + 1, num_episodes, np.max(stats["episode_rewards"][:,i_episode - 1])))
+              
+        # go through the episode and make policy updates
+        feed_dict={};
+        for t in range(len(episode[0])):
+          for i in range(n_particles):
+            transition=episode[i][t];
+            # The return after this timestep
+            total_return = sum(discount_factor**idx * trans.reward for idx, trans in enumerate(episode[i][t:]))
+            # Update our value estimator
+            estimator_value[i].update(transition.state, total_return)
+            # Calculate baseline/advantage
+            baseline_value = estimator_value[i].predict(transition.state)
+            advantage = total_return - baseline_value
+            # Update our policy estimator
+            #estimator_policy.update(transition.state, advantage, transition.action)
+            feed_dict.update({estimator_policy[i].state:featurize_state(transition.state)});
+            feed_dict.update({estimator_policy[i].target:advantage});
+            feed_dict.update({estimator_policy[i].action:transition.action});
+          svpg.run(feed_dict);
     
     return stats
 
@@ -259,7 +261,7 @@ with tf.Session() as sess:
     sess.run(tf.global_variables_initializer())
     # Note, due to randomness in the policy the number of episodes you need varies
     # TODO: Sometimes the algorithm gets stuck, I'm not sure what exactly is happening there.
-    stats = actor_critic(env, policy_estimator, value_estimator, svpg, NUM_EPISODES, discount_factor=0.95)
+    stats = REINFORCE(env, policy_estimator, value_estimator, svpg, NUM_EPISODES, discount_factor=0.95)
 
 
 
