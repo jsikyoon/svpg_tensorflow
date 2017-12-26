@@ -4,8 +4,8 @@ from svpg import SVPG
 import gc
 gc.enable()
 
-ENV_NAME = 'InvertedPendulum-v1'
-#ENV_NAME = 'MountainCarContinuous-v0'
+#ENV_NAME = 'InvertedPendulum-v1'
+ENV_NAME = 'MountainCarContinuous-v0'
 EPISODES = 10000
 TEST = 10
 n_particle=3
