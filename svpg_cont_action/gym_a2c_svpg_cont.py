@@ -27,6 +27,8 @@ if(ENV_NAME=="Pendulum-v0"):
   UPDATE_ITER=10;
   MAX_EPI_STEP=200;
   DISCOUNT_FACTOR=0.9;
+  PPO_FLAG=0;  
+  PPO_CLIP_PARAM=0.2;
 if(ENV_NAME=="MountainCarContinuous-v0"):
   NUM_EPISODES=100;
   ENTROPY_BETA=0.1;
@@ -36,15 +38,19 @@ if(ENV_NAME=="MountainCarContinuous-v0"):
   UPDATE_ITER=20;
   MAX_EPI_STEP=1000;
   DISCOUNT_FACTOR=0.95;
+  PPO_FLAG=0;  # NOTE: MountainCarContinuous version PPO is not implemented
+  PPO_CLIP_PARAM=0.2;
 if(ENV_NAME=="RoboschoolAnt-v1"):
-  NUM_EPISODES=10000;
+  NUM_EPISODES=50000;
   ENTROPY_BETA=0.01;
-  POLICY_LR=0.0001;
+  POLICY_LR=0.00001;
   VALUE_LR=0.001;
   NUM_VARS=6;
   UPDATE_ITER=10;
   MAX_EPI_STEP=200;
   DISCOUNT_FACTOR=0.9;
+  PPO_FLAG=0;
+  PPO_CLIP_PARAM=0.1;
 
 # for SVPG
 n_particles=1;
@@ -179,6 +185,79 @@ class ValueEstimator_MountainCarContinuous():
 """
 For Pendulum-v0
 """
+class PolicyEstimator_PPO_Pendulum():
+    def __init__(self, entropy_beta=0.01, learning_rate=0.01, par_idx=0,clip_param=0.2,scope="policy_estimator"):
+        w_init = tf.random_normal_initializer(0.,.1);
+        with tf.variable_scope(scope+"_"+str(par_idx)):
+            
+            # state, target and action
+            self.state = tf.placeholder(tf.float32, [None,num_state], name="state")
+            self.target = tf.placeholder(tf.float32,[None,1], name="target")
+            self.a_his = tf.placeholder(tf.float32, [None, num_action], name="action_hist")        
+            
+            # old layers
+            l_a_old = tf.layers.dense(self.state, 200, tf.nn.relu6, kernel_initializer=w_init, name='la_old')
+            self.mu_old = tf.layers.dense(l_a_old, num_action, tf.nn.tanh, kernel_initializer=w_init, name='mu_old') # estimated action value
+            self.sigma_old = tf.layers.dense(l_a_old, num_action, tf.nn.softplus, kernel_initializer=w_init, name='sigma_old') # estimated variance
+            
+            # layers
+            l_a = tf.layers.dense(self.state, 200, tf.nn.relu6, kernel_initializer=w_init, name='la')
+            self.mu = tf.layers.dense(l_a, num_action, tf.nn.tanh, kernel_initializer=w_init, name='mu') # estimated action value
+            self.sigma = tf.layers.dense(l_a, num_action, tf.nn.softplus, kernel_initializer=w_init, name='sigma') # estimated variance
+            
+            # wrap output
+            self.mu = self.mu * action_bound[1];
+            self.sigma = self.sigma + 1e-4
+            self.mu_old = self.mu_old * action_bound[1];
+            self.sigma_old = self.sigma_old + 1e-4
+
+            # get action from distribution
+            self.normal_dist = tf.contrib.distributions.Normal(self.mu, self.sigma)
+            self.action = tf.squeeze(self.normal_dist.sample(1),axis=0);
+            self.action = tf.clip_by_value(self.action, action_bound[0], action_bound[1])
+            
+            # get distribution of old
+            self.normal_dist_old = tf.contrib.distributions.Normal(self.mu_old, self.sigma_old)
+            
+            # PPO Loss
+            #self.loss = -self.normal_dist.log_prob(self.a_his) * self.target
+            ratio = tf.exp(self.normal_dist.log_prob(self.a_his) - tf.stop_gradient(self.normal_dist_old.log_prob(self.a_his)))
+            surr1 = ratio * self.target
+            surr2 = tf.clip_by_value(ratio, 1.0 - clip_param, 1.0 + clip_param) * self.target
+            self.loss = -tf.reduce_mean(tf.minimum(surr1, surr2))
+            
+            # Add cross entropy cost to encourage exploration
+            self.loss -= entropy_beta * self.normal_dist.entropy()
+            self.optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
+            self.grads_and_vars = self.optimizer.compute_gradients(self.loss)
+            self.grads=[];
+            self.vars=[];
+            for i in range(len(self.grads_and_vars)):
+              self.grads.append(self.grads_and_vars[i][0]);
+              self.vars.append(self.grads_and_vars[i][1]);
+            self.grads=self.grads[-1*NUM_VARS:];
+            self.vars_old=self.vars[-2*NUM_VARS:-1*NUM_VARS];
+            self.vars=self.vars[-1*NUM_VARS:];
+            self.train_op = self.optimizer.apply_gradients(
+                self.grads_and_vars, global_step=tf.contrib.framework.get_global_step())
+            self.assign_op = self.assign(self.vars,self.vars_old)
+
+    def assign(self,net,old_net):
+        assign_op = []
+        for (newv, oldv) in zip(net, old_net):
+          assign_op.append(tf.assign(oldv, newv))
+        return assign_op;
+
+    def predict(self, state, sess=None):
+        sess = sess or tf.get_default_session()
+        return sess.run(self.action, { self.state: [state] })[0]
+
+    def update(self, state, target, a_his, sess=None):
+        sess = sess or tf.get_default_session()
+        feed_dict = { self.state: state, self.target: target, self.a_his: a_his  }
+        _, loss = sess.run([self.train_op, self.loss], feed_dict)
+        return loss
+
 class PolicyEstimator_Pendulum():
     def __init__(self, entropy_beta=0.01, learning_rate=0.01, par_idx=0,scope="policy_estimator"):
         w_init = tf.random_normal_initializer(0.,.1);
@@ -279,6 +358,10 @@ def advantage_actor_critic(env, estimator_policy, estimator_value, svpg, num_epi
     # trasition backup initialization
     for i in range(n_particles):
       episode[i]=[];
+    # PPO old_net=net
+    if(PPO_FLAG==1):
+      for i in range(n_particles):
+        sess.run(estimator_policy[i].assign_op);
 
     for i_episode in range(num_episodes):
         # Reset the environment
@@ -353,9 +436,17 @@ def advantage_actor_critic(env, estimator_policy, estimator_value, svpg, num_epi
                 feed_dict.update({estimator_policy[i].target:np.reshape(buffer_td_error[i],[-1,1])});
                 feed_dict.update({estimator_policy[i].a_his:np.reshape(buffer_a[i],[-1,num_action])});
               svpg.run(feed_dict);
+              if(PPO_FLAG==1):
+                # NOTE: for testing, fixing iter as 20
+                for ppo_idx in range(20-1):
+                  svpg.run(feed_dict);
               # trasition backup re-set
               for i in range(n_particles):
                 episode[i]=[];
+              # PPO old_net=net
+              if(PPO_FLAG==1):
+                for i in range(n_particles):
+                  sess.run(estimator_policy[i].assign_op);
             total_step+=1;
             if Done:
                 break
@@ -375,13 +466,20 @@ value_estimator = np.zeros(n_particles,dtype=object);
 # call proper policy and value estimators for each envs
 for i in range(n_particles):
   if(ENV_NAME=="Pendulum-v0"):
-    policy_estimator[i] = PolicyEstimator_Pendulum(entropy_beta=ENTROPY_BETA,learning_rate=POLICY_LR,par_idx=i)
+    if(PPO_FLAG==1):
+      policy_estimator[i] = PolicyEstimator_PPO_Pendulum(entropy_beta=ENTROPY_BETA,learning_rate=POLICY_LR,par_idx=i,clip_param=PPO_CLIP_PARAM1yy)
+    else:
+      policy_estimator[i] = PolicyEstimator_Pendulum(entropy_beta=ENTROPY_BETA,learning_rate=POLICY_LR,par_idx=i)
     value_estimator[i] = ValueEstimator_Pendulum(learning_rate=VALUE_LR,par_idx=i)
+  # NOTE: MountainCarContinuous version PPO is not implemented
   if(ENV_NAME=="MountainCarContinuous-v0"):
     policy_estimator[i] = PolicyEstimator_MountainCarContinuous(entropy_beta=ENTROPY_BETA,learning_rate=POLICY_LR,par_idx=i)
     value_estimator[i] = ValueEstimator_MountainCarContinuous(learning_rate=VALUE_LR,par_idx=i)
   if(ENV_NAME=="RoboschoolAnt-v1"):
-    policy_estimator[i] = PolicyEstimator_Pendulum(entropy_beta=ENTROPY_BETA,learning_rate=POLICY_LR,par_idx=i)
+    if(PPO_FLAG==1):
+      policy_estimator[i] = PolicyEstimator_PPO_Pendulum(entropy_beta=ENTROPY_BETA,learning_rate=POLICY_LR,par_idx=i,clip_param=PPO_CLIP_PARAM)
+    else:
+      policy_estimator[i] = PolicyEstimator_Pendulum(entropy_beta=ENTROPY_BETA,learning_rate=POLICY_LR,par_idx=i)
     value_estimator[i] = ValueEstimator_Pendulum(learning_rate=VALUE_LR,par_idx=i)
 
 svpg=SVPG(policy_estimator,independent_flag_svpg,learning_rate=POLICY_LR);
